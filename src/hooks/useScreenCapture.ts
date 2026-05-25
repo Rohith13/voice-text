@@ -1,16 +1,71 @@
 import { useState, useRef, useCallback } from 'react'
 
-const WHISPER_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions'
-
 export type ScreenCaptureStatus = 'idle' | 'capturing' | 'processing' | 'error'
+export type TranscriptionProvider = 'openai' | 'huggingface'
+
+export interface CaptureOpts {
+  provider: TranscriptionProvider
+  apiKey: string
+  translateToEnglish: boolean
+}
 
 export interface UseScreenCaptureReturn {
   status: ScreenCaptureStatus
   isCapturing: boolean
   isProcessing: boolean
   error: string | null
-  startCapture: (opts: { apiKey: string; translateToEnglish: boolean }) => Promise<void>
+  startCapture: (opts: CaptureOpts) => Promise<void>
   stopCapture: () => void
+}
+
+const OPENAI_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions'
+const HF_MODEL = 'openai/whisper-large-v3-turbo'
+
+async function transcribeOpenAI(blob: Blob, mimeType: string, opts: CaptureOpts): Promise<string> {
+  const form = new FormData()
+  form.append('file', blob, `audio.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`)
+  form.append('model', 'whisper-1')
+  form.append('response_format', 'text')
+  if (opts.translateToEnglish) form.append('task', 'translate')
+
+  const res = await fetch(OPENAI_ENDPOINT, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${opts.apiKey}` },
+    body: form,
+  })
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText)
+    throw new Error(`OpenAI Whisper error (${res.status}): ${msg}`)
+  }
+  return res.text()
+}
+
+async function transcribeHuggingFace(blob: Blob, opts: CaptureOpts): Promise<string> {
+  const endpoint = `https://api-inference.huggingface.co/models/${HF_MODEL}`
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${opts.apiKey}`,
+      'Content-Type': blob.type || 'audio/webm',
+    },
+    body: blob,
+  })
+
+  if (res.status === 503) {
+    // Model is cold-starting on HF free tier
+    const json = await res.json().catch(() => ({})) as { estimated_time?: number }
+    const wait = Math.ceil(json.estimated_time ?? 20)
+    throw new Error(`Hugging Face model is warming up (est. ${wait}s). Please wait a moment and try again.`)
+  }
+
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText)
+    throw new Error(`Hugging Face error (${res.status}): ${msg}`)
+  }
+
+  const json = await res.json() as { text?: string }
+  return json.text ?? ''
 }
 
 export function useScreenCapture(onTranscript: (text: string) => void): UseScreenCaptureReturn {
@@ -19,31 +74,7 @@ export function useScreenCapture(onTranscript: (text: string) => void): UseScree
 
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
-  const optsRef = useRef({ apiKey: '', translateToEnglish: true })
-
-  const sendToWhisper = useCallback(async (blob: Blob): Promise<string> => {
-    const { apiKey, translateToEnglish } = optsRef.current
-    const form = new FormData()
-    form.append('file', blob, 'audio.webm')
-    form.append('model', 'whisper-1')
-    if (translateToEnglish) {
-      form.append('task', 'translate')
-    }
-    form.append('response_format', 'text')
-
-    const res = await fetch(WHISPER_ENDPOINT, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-    })
-
-    if (!res.ok) {
-      const msg = await res.text().catch(() => res.statusText)
-      throw new Error(`Whisper API error (${res.status}): ${msg}`)
-    }
-
-    return res.text()
-  }, [])
+  const optsRef = useRef<CaptureOpts>({ provider: 'openai', apiKey: '', translateToEnglish: true })
 
   const stopCapture = useCallback(() => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
@@ -51,14 +82,19 @@ export function useScreenCapture(onTranscript: (text: string) => void): UseScree
     }
   }, [])
 
-  const startCapture = useCallback(async (opts: { apiKey: string; translateToEnglish: boolean }) => {
+  const startCapture = useCallback(async (opts: CaptureOpts) => {
     optsRef.current = opts
     setError(null)
     chunksRef.current = []
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        // Cast needed for non-standard Chrome options
+        ...(({ audio: { echoCancellation: false, noiseSuppression: false, sampleRate: 44100 } }) as unknown as object),
+        audio: true,
+      })
     } catch (err) {
       const name = (err as Error).name
       if (name === 'NotAllowedError' || name === 'AbortError') {
@@ -72,17 +108,17 @@ export function useScreenCapture(onTranscript: (text: string) => void): UseScree
     const audioTracks = stream.getAudioTracks()
     if (audioTracks.length === 0) {
       stream.getTracks().forEach(t => t.stop())
-      setError('No audio found. In the share dialog, make sure to enable "Share tab audio" or "Share system audio".')
+      setError(
+        'No audio captured. You must: (1) choose "Chrome Tab" in the share dialog — not Window or Screen, (2) check the "Share tab audio" checkbox before clicking Share.'
+      )
       return
     }
 
-    // Drop video — we only need audio
     stream.getVideoTracks().forEach(t => t.stop())
 
     const audioStream = new MediaStream(audioTracks)
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm'
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+      .find(t => MediaRecorder.isTypeSupported(t)) ?? 'audio/webm'
 
     const recorder = new MediaRecorder(audioStream, { mimeType })
     recorderRef.current = recorder
@@ -103,10 +139,12 @@ export function useScreenCapture(onTranscript: (text: string) => void): UseScree
       try {
         const blob = new Blob(chunksRef.current, { type: mimeType })
         chunksRef.current = []
-        const text = await sendToWhisper(blob)
-        if (text.trim()) {
-          onTranscript(text.trim())
-        }
+        const { provider } = optsRef.current
+        const text = provider === 'openai'
+          ? await transcribeOpenAI(blob, mimeType, optsRef.current)
+          : await transcribeHuggingFace(blob, optsRef.current)
+
+        if (text.trim()) onTranscript(text.trim())
         setStatus('idle')
         setError(null)
       } catch (err) {
@@ -115,14 +153,13 @@ export function useScreenCapture(onTranscript: (text: string) => void): UseScree
       }
     }
 
-    // User stops share from browser chrome (the X button in the sharing bar)
     audioTracks[0].onended = () => {
       if (recorder.state !== 'inactive') recorder.stop()
     }
 
     recorder.start()
     setStatus('capturing')
-  }, [sendToWhisper, onTranscript])
+  }, [onTranscript])
 
   return {
     status,

@@ -7,7 +7,8 @@ import WaveformBars from './components/WaveformBars'
 import TranscriptDisplay from './components/TranscriptDisplay'
 import StatusBar from './components/StatusBar'
 import ModeSelector, { type CaptureMode } from './components/ModeSelector'
-import ApiKeyModal, { getSavedApiKey } from './components/ApiKeyModal'
+import ApiKeyModal, { getSavedApiKey, getSavedProvider } from './components/ApiKeyModal'
+import type { TranscriptionProvider } from './hooks/useScreenCapture'
 import './App.css'
 
 const LogoIcon = () => (
@@ -72,16 +73,17 @@ export default function App() {
       stopCapture()
       return
     }
-    const apiKey = getSavedApiKey()
+    const provider = getSavedProvider()
+    const apiKey = getSavedApiKey(provider)
     if (!apiKey) {
       setShowApiModal(true)
       return
     }
-    startCapture({ apiKey, translateToEnglish })
+    startCapture({ provider, apiKey, translateToEnglish })
   }
 
-  const handleApiKeySaved = (key: string) => {
-    startCapture({ apiKey: key, translateToEnglish })
+  const handleApiKeySaved = (provider: TranscriptionProvider, key: string) => {
+    startCapture({ provider, apiKey: key, translateToEnglish })
   }
 
   const activeError = mode === 'microphone' ? micError : screenError
@@ -217,7 +219,7 @@ export default function App() {
                       textUnderlineOffset: 3,
                     }}
                   >
-                    {getSavedApiKey() ? 'Change OpenAI API key' : 'Set OpenAI API key'}
+                    {getSavedApiKey(getSavedProvider()) ? 'Change API key / provider' : 'Set API key (free option available)'}
                   </button>
                 </motion.div>
               )}
@@ -290,7 +292,7 @@ export default function App() {
       <ApiKeyModal
         isOpen={showApiModal}
         onClose={() => setShowApiModal(false)}
-        onSave={handleApiKeySaved}
+        onSave={(provider, key) => handleApiKeySaved(provider, key)}
       />
     </div>
   )
