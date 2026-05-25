@@ -16,7 +16,7 @@ export interface UseSpeechRecognitionReturn {
   startListening: () => void
   stopListening: () => void
   clearTranscript: () => void
-  updateTranscript: (text: string) => void
+  updateTranscript: (textOrUpdater: string | ((prev: string) => string)) => void
   error: string | null
   isSupported: boolean
   language: string
@@ -175,8 +175,11 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     setInterimTranscript('')
   }, [])
 
-  const updateTranscript = useCallback((text: string) => {
-    const trimmed = text.slice(0, MAX_TRANSCRIPT_CHARS)
+  const updateTranscript = useCallback((textOrUpdater: string | ((prev: string) => string)) => {
+    const next = typeof textOrUpdater === 'function'
+      ? textOrUpdater(finalTranscriptRef.current)
+      : textOrUpdater
+    const trimmed = next.slice(0, MAX_TRANSCRIPT_CHARS)
     finalTranscriptRef.current = trimmed
     setTranscript(trimmed)
   }, [])

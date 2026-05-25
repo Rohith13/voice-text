@@ -1,9 +1,13 @@
-import { motion } from 'framer-motion'
+import { useState, useCallback } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { useSpeechRecognition } from './hooks/useSpeechRecognition'
+import { useScreenCapture } from './hooks/useScreenCapture'
 import MicButton from './components/MicButton'
 import WaveformBars from './components/WaveformBars'
 import TranscriptDisplay from './components/TranscriptDisplay'
 import StatusBar from './components/StatusBar'
+import ModeSelector, { type CaptureMode } from './components/ModeSelector'
+import ApiKeyModal, { getSavedApiKey } from './components/ApiKeyModal'
 import './App.css'
 
 const LogoIcon = () => (
@@ -23,6 +27,10 @@ const LogoIcon = () => (
 )
 
 export default function App() {
+  const [mode, setMode] = useState<CaptureMode>('microphone')
+  const [translateToEnglish, setTranslateToEnglish] = useState(true)
+  const [showApiModal, setShowApiModal] = useState(false)
+
   const {
     isListening,
     transcript,
@@ -31,19 +39,53 @@ export default function App() {
     stopListening,
     clearTranscript,
     updateTranscript,
-    error,
+    error: micError,
     isSupported,
     language,
     setLanguage,
   } = useSpeechRecognition()
 
-  const handleToggle = () => {
-    if (isListening) {
-      stopListening()
-    } else {
-      startListening()
-    }
+  // Append Whisper results to the shared transcript
+  const handleScreenTranscript = useCallback((text: string) => {
+    updateTranscript((prev: string) => {
+      const separator = prev.trim() ? '\n\n' : ''
+      return prev + separator + text
+    })
+  }, [updateTranscript])
+
+  const {
+    status: screenStatus,
+    isCapturing,
+    isProcessing,
+    error: screenError,
+    startCapture,
+    stopCapture,
+  } = useScreenCapture(handleScreenTranscript)
+
+  const handleMicToggle = () => {
+    if (isListening) stopListening()
+    else startListening()
   }
+
+  const handleScreenToggle = () => {
+    if (isCapturing) {
+      stopCapture()
+      return
+    }
+    const apiKey = getSavedApiKey()
+    if (!apiKey) {
+      setShowApiModal(true)
+      return
+    }
+    startCapture({ apiKey, translateToEnglish })
+  }
+
+  const handleApiKeySaved = (key: string) => {
+    startCapture({ apiKey: key, translateToEnglish })
+  }
+
+  const activeError = mode === 'microphone' ? micError : screenError
+  const isActive = mode === 'microphone' ? isListening : isCapturing
 
   return (
     <div className="app-root">
@@ -74,6 +116,21 @@ export default function App() {
       <main className="app-main">
         <div className="app-container">
 
+          {/* Mode selector */}
+          <motion.div
+            style={{ display: 'flex', justifyContent: 'center' }}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, ease: 'easeOut' }}
+          >
+            <ModeSelector mode={mode} onChange={(m) => {
+              if (isListening) stopListening()
+              if (isCapturing) stopCapture()
+              setMode(m)
+            }} />
+          </motion.div>
+
+          {/* Hero */}
           <motion.section
             className="hero-section"
             initial={{ opacity: 0, y: 24 }}
@@ -82,20 +139,91 @@ export default function App() {
           >
             <div
               className="mic-glow"
-              style={{
-                opacity: isListening ? 1 : 0,
-                transition: 'opacity 0.6s ease',
-              }}
+              style={{ opacity: isActive ? 1 : 0, transition: 'opacity 0.6s ease' }}
               aria-hidden="true"
             />
 
-            <MicButton
-              isListening={isListening}
-              isSupported={isSupported}
-              onToggle={handleToggle}
-            />
+            <AnimatePresence mode="wait">
+              {mode === 'microphone' ? (
+                <motion.div
+                  key="mic"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <MicButton
+                    isListening={isListening}
+                    isSupported={isSupported}
+                    onToggle={handleMicToggle}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="screen"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ duration: 0.25 }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}
+                >
+                  <ScreenCaptureButton
+                    status={screenStatus}
+                    isCapturing={isCapturing}
+                    isProcessing={isProcessing}
+                    onToggle={handleScreenToggle}
+                  />
 
-            <WaveformBars isListening={isListening} barCount={32} />
+                  {/* Translate toggle */}
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
+                    <div
+                      onClick={() => setTranslateToEnglish(v => !v)}
+                      style={{
+                        width: 38,
+                        height: 22,
+                        borderRadius: 11,
+                        background: translateToEnglish ? '#6366f1' : 'rgba(255,255,255,0.1)',
+                        position: 'relative',
+                        transition: 'background 0.2s',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <span style={{
+                        position: 'absolute',
+                        top: 3,
+                        left: translateToEnglish ? 19 : 3,
+                        width: 16,
+                        height: 16,
+                        borderRadius: '50%',
+                        background: '#fff',
+                        transition: 'left 0.2s',
+                      }} />
+                    </div>
+                    <span style={{ fontSize: '0.82rem', color: '#94a3b8' }}>
+                      Translate to English (Whisper)
+                    </span>
+                  </label>
+
+                  {/* API key settings link */}
+                  <button
+                    onClick={() => setShowApiModal(true)}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#475569',
+                      fontSize: '0.75rem',
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                      textUnderlineOffset: 3,
+                    }}
+                  >
+                    {getSavedApiKey() ? 'Change OpenAI API key' : 'Set OpenAI API key'}
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <WaveformBars isListening={isActive} barCount={32} />
           </motion.section>
 
           <motion.div
@@ -114,8 +242,8 @@ export default function App() {
           >
             <TranscriptDisplay
               transcript={transcript}
-              interimTranscript={interimTranscript}
-              isListening={isListening}
+              interimTranscript={mode === 'microphone' ? interimTranscript : ''}
+              isListening={isActive}
               onClear={clearTranscript}
               onTranscriptChange={updateTranscript}
             />
@@ -128,10 +256,12 @@ export default function App() {
             transition={{ duration: 0.5, delay: 0.3, ease: 'easeOut' }}
           >
             <StatusBar
-              isListening={isListening}
-              error={error}
+              isListening={isActive}
+              isProcessing={isProcessing}
+              error={activeError}
               language={language}
               onLanguageChange={setLanguage}
+              mode={mode}
             />
           </motion.section>
 
@@ -142,20 +272,151 @@ export default function App() {
             transition={{ duration: 0.5, delay: 0.5 }}
           >
             <p>
-              Uses the{' '}
-              <a
-                href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+              Mic mode uses the{' '}
+              <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API" target="_blank" rel="noopener noreferrer">
                 Web Speech API
               </a>
-              {' '}— best supported in Chrome and Edge. All processing happens locally in your browser.
+              {' '}· Screen mode uses{' '}
+              <a href="https://openai.com/research/whisper" target="_blank" rel="noopener noreferrer">
+                OpenAI Whisper
+              </a>
+              {' '}· All audio processed locally or via your own API key
             </p>
           </motion.footer>
 
         </div>
       </main>
+
+      <ApiKeyModal
+        isOpen={showApiModal}
+        onClose={() => setShowApiModal(false)}
+        onSave={handleApiKeySaved}
+      />
+    </div>
+  )
+}
+
+// ── Screen capture button ──────────────────────────────────────────────────────
+
+interface ScreenCaptureButtonProps {
+  status: string
+  isCapturing: boolean
+  isProcessing: boolean
+  onToggle: () => void
+}
+
+function ScreenCaptureButton({ status, isCapturing, isProcessing, onToggle }: ScreenCaptureButtonProps) {
+  const label = isProcessing ? 'Transcribing…' : isCapturing ? 'Stop Capture' : 'Start Screen Capture'
+  const isDisabled = isProcessing
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+      <div style={{ position: 'relative', width: 160, height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <AnimatePresence>
+          {isCapturing && Array.from({ length: 3 }).map((_, i) => (
+            <motion.span
+              key={i}
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: 1.8 + i * 0.35, opacity: 0 }}
+              exit={{ scale: 0.85, opacity: 0 }}
+              transition={{ duration: 1.8, repeat: Infinity, delay: i * 0.5, ease: 'easeOut' }}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                borderRadius: '50%',
+                border: `2px solid rgba(34, 197, 94, ${0.5 - i * 0.15})`,
+                pointerEvents: 'none',
+              }}
+            />
+          ))}
+        </AnimatePresence>
+
+        <motion.button
+          onClick={isDisabled ? undefined : onToggle}
+          disabled={isDisabled}
+          aria-label={label}
+          whileHover={!isDisabled ? { scale: 1.06 } : {}}
+          whileTap={!isDisabled ? { scale: 0.94 } : {}}
+          animate={isCapturing ? {
+            scale: [1, 1.04, 1],
+            boxShadow: ['0 8px 32px rgba(34,197,94,0.35)', '0 12px 48px rgba(34,197,94,0.55)', '0 8px 32px rgba(34,197,94,0.35)'],
+          } : {
+            scale: 1,
+            boxShadow: isProcessing ? '0 8px 32px rgba(245,158,11,0.35)' : '0 8px 32px rgba(34,197,94,0.2)',
+          }}
+          transition={isCapturing ? { duration: 2, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.3 }}
+          style={{
+            position: 'relative',
+            width: 120,
+            height: 120,
+            borderRadius: '50%',
+            border: 'none',
+            cursor: isDisabled ? 'wait' : 'pointer',
+            background: isProcessing
+              ? 'linear-gradient(135deg, #d97706 0%, #f59e0b 100%)'
+              : isCapturing
+                ? 'linear-gradient(135deg, #15803d 0%, #22c55e 100%)'
+                : 'linear-gradient(135deg, #166534 0%, #16a34a 50%, #22c55e 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            outline: 'none',
+            zIndex: 1,
+            opacity: isDisabled ? 0.7 : 1,
+          }}
+        >
+          <span style={{ position: 'absolute', inset: 4, borderRadius: '50%', background: 'rgba(255,255,255,0.08)', pointerEvents: 'none' }} />
+
+          {isProcessing ? (
+            <motion.svg
+              width="36" height="36" viewBox="0 0 24 24" fill="none"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+            >
+              <circle cx="12" cy="12" r="9" stroke="white" strokeWidth="2" strokeDasharray="28 8" strokeLinecap="round" />
+            </motion.svg>
+          ) : (
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              {isCapturing ? (
+                <rect x="6" y="6" width="12" height="12" rx="2" fill="white" stroke="none" />
+              ) : (
+                <>
+                  <rect x="2" y="3" width="20" height="14" rx="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </>
+              )}
+            </svg>
+          )}
+
+          <AnimatePresence>
+            {isCapturing && (
+              <motion.span
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0, opacity: 0 }}
+                style={{ position: 'absolute', top: 12, right: 12, width: 12, height: 12, borderRadius: '50%', background: '#ef4444', boxShadow: '0 0 8px rgba(239,68,68,0.8)' }}
+              />
+            )}
+          </AnimatePresence>
+        </motion.button>
+      </div>
+
+      <motion.p
+        key={status}
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25 }}
+        style={{
+          fontSize: '0.9rem',
+          fontWeight: 500,
+          letterSpacing: '0.04em',
+          color: isProcessing ? '#fbbf24' : isCapturing ? '#4ade80' : '#94a3b8',
+          textTransform: 'uppercase',
+        }}
+      >
+        {label}
+      </motion.p>
     </div>
   )
 }
