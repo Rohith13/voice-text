@@ -9,6 +9,7 @@ import StatusBar from './components/StatusBar'
 import ModeSelector, { type CaptureMode } from './components/ModeSelector'
 import ApiKeyModal, { getSavedApiKey, getSavedProvider } from './components/ApiKeyModal'
 import type { TranscriptionProvider } from './hooks/useScreenCapture'
+import { useVideoTranscript } from './hooks/useVideoTranscript'
 import './App.css'
 
 const LogoIcon = () => (
@@ -31,6 +32,7 @@ export default function App() {
   const [mode, setMode] = useState<CaptureMode>('microphone')
   const [translateToEnglish, setTranslateToEnglish] = useState(true)
   const [showApiModal, setShowApiModal] = useState(false)
+  const [videoUrl, setVideoUrl] = useState('')
 
   const {
     isListening,
@@ -46,13 +48,19 @@ export default function App() {
     setLanguage,
   } = useSpeechRecognition()
 
-  // Append Whisper results to the shared transcript
+  // Append results to the shared transcript (used by both screen and video modes)
   const handleScreenTranscript = useCallback((text: string) => {
     updateTranscript((prev: string) => {
       const separator = prev.trim() ? '\n\n' : ''
       return prev + separator + text
     })
   }, [updateTranscript])
+
+  const {
+    isLoading: isVideoLoading,
+    error: videoError,
+    fetchTranscript: fetchVideoTranscript,
+  } = useVideoTranscript(handleScreenTranscript)
 
   const {
     status: screenStatus,
@@ -86,7 +94,7 @@ export default function App() {
     startCapture({ provider, apiKey: key, translateToEnglish })
   }
 
-  const activeError = mode === 'microphone' ? micError : screenError
+  const activeError = mode === 'microphone' ? micError : mode === 'screen' ? screenError : videoError
   const isActive = mode === 'microphone' ? isListening : isCapturing
 
   return (
@@ -128,6 +136,7 @@ export default function App() {
             <ModeSelector mode={mode} onChange={(m) => {
               if (isListening) stopListening()
               if (isCapturing) stopCapture()
+              setVideoUrl('')
               setMode(m)
             }} />
           </motion.div>
@@ -158,6 +167,22 @@ export default function App() {
                     isListening={isListening}
                     isSupported={isSupported}
                     onToggle={handleMicToggle}
+                  />
+                </motion.div>
+              ) : mode === 'video' ? (
+                <motion.div
+                  key="video"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  transition={{ duration: 0.25 }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, width: '100%', maxWidth: 480 }}
+                >
+                  <VideoUrlPanel
+                    url={videoUrl}
+                    onUrlChange={setVideoUrl}
+                    isLoading={isVideoLoading}
+                    onFetch={() => fetchVideoTranscript(videoUrl)}
                   />
                 </motion.div>
               ) : (
@@ -225,7 +250,7 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            <WaveformBars isListening={isActive} barCount={32} />
+            {mode !== 'video' && <WaveformBars isListening={isActive} barCount={32} />}
           </motion.section>
 
           <motion.div
@@ -282,7 +307,7 @@ export default function App() {
               <a href="https://openai.com/research/whisper" target="_blank" rel="noopener noreferrer">
                 OpenAI Whisper
               </a>
-              {' '}· All audio processed locally or via your own API key
+              {' '}· Video URL mode fetches YouTube captions · Instagram Reels: use Screen Audio mode
             </p>
           </motion.footer>
 
@@ -294,6 +319,100 @@ export default function App() {
         onClose={() => setShowApiModal(false)}
         onSave={(provider, key) => handleApiKeySaved(provider, key)}
       />
+    </div>
+  )
+}
+
+// ── Video URL panel ───────────────────────────────────────────────────────────
+
+interface VideoUrlPanelProps {
+  url: string
+  onUrlChange: (url: string) => void
+  isLoading: boolean
+  onFetch: () => void
+}
+
+function VideoUrlPanel({ url, onUrlChange, isLoading, onFetch }: VideoUrlPanelProps) {
+  return (
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+      {/* Icon */}
+      <div style={{
+        width: 90, height: 90, borderRadius: '50%',
+        background: isLoading
+          ? 'linear-gradient(135deg, #d97706 0%, #f59e0b 100%)'
+          : 'linear-gradient(135deg, #dc2626 0%, #ef4444 100%)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: isLoading ? '0 8px 32px rgba(245,158,11,0.35)' : '0 8px 32px rgba(239,68,68,0.3)',
+        transition: 'all 0.3s',
+        flexShrink: 0,
+      }}>
+        {isLoading ? (
+          <motion.svg
+            width="36" height="36" viewBox="0 0 24 24" fill="none"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+          >
+            <circle cx="12" cy="12" r="9" stroke="white" strokeWidth="2" strokeDasharray="28 8" strokeLinecap="round" />
+          </motion.svg>
+        ) : (
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <polygon points="5 3 19 12 5 21 5 3" fill="white" />
+          </svg>
+        )}
+      </div>
+
+      <p style={{ fontSize: '0.9rem', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase', color: isLoading ? '#fbbf24' : '#94a3b8' }}>
+        {isLoading ? 'Fetching captions…' : 'YouTube / Shorts'}
+      </p>
+
+      {/* URL input + button */}
+      <div style={{ width: '100%', display: 'flex', gap: 8 }}>
+        <input
+          type="url"
+          value={url}
+          onChange={e => onUrlChange(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !isLoading && url.trim() && onFetch()}
+          placeholder="https://youtube.com/watch?v=..."
+          style={{
+            flex: 1,
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(239,68,68,0.25)',
+            borderRadius: 10,
+            padding: '10px 14px',
+            color: '#e2e8f0',
+            fontSize: '0.88rem',
+            fontFamily: 'inherit',
+            outline: 'none',
+          }}
+        />
+        <button
+          onClick={onFetch}
+          disabled={isLoading || !url.trim()}
+          style={{
+            background: isLoading || !url.trim()
+              ? 'rgba(239,68,68,0.15)'
+              : 'linear-gradient(135deg, #dc2626, #ef4444)',
+            border: 'none',
+            borderRadius: 10,
+            padding: '10px 18px',
+            color: isLoading || !url.trim() ? '#6b7280' : '#fff',
+            fontWeight: 600,
+            fontSize: '0.85rem',
+            cursor: isLoading || !url.trim() ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Get Transcript
+        </button>
+      </div>
+
+      {/* Info note */}
+      <p style={{ fontSize: '0.75rem', color: '#475569', textAlign: 'center', lineHeight: 1.6, maxWidth: 380 }}>
+        Works with YouTube videos, Shorts, and youtu.be links that have captions enabled.
+        <br />
+        For Instagram Reels, use <strong style={{ color: '#94a3b8' }}>Screen Audio</strong> mode instead.
+      </p>
     </div>
   )
 }

@@ -130,7 +130,7 @@ export default function StatusBar({ isListening, isProcessing, error, language, 
         )}
 
         <span style={{ color: '#334155', fontSize: '0.72rem', letterSpacing: '0.01em' }}>
-          {mode === 'microphone' ? 'Web Speech API · Browser only' : 'Whisper API · Audio sent to OpenAI'}
+          {mode === 'microphone' ? 'Web Speech API · Browser only' : mode === 'screen' ? 'Whisper API · Audio sent to provider' : 'YouTube captions · No API key needed'}
         </span>
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 
-export type CaptureMode = 'microphone' | 'screen'
+export type CaptureMode = 'microphone' | 'screen' | 'video'
 
 interface ModeSelectorProps {
   mode: CaptureMode
@@ -19,7 +19,7 @@ export default function ModeSelector({ mode, onChange }: ModeSelectorProps) {
         padding: 4,
       }}
     >
-      {(['microphone', 'screen'] as CaptureMode[]).map(m => (
+      {(['microphone', 'screen', 'video'] as CaptureMode[]).map(m => (
         <button
           key={m}
           onClick={() => onChange(m)}
@@ -61,14 +61,18 @@ export default function ModeSelector({ mode, onChange }: ModeSelectorProps) {
               <line x1="12" y1="17" x2="12" y2="21" />
               <line x1="8" y1="21" x2="16" y2="21" />
             </svg>
-          ) : (
+          ) : m === 'screen' ? (
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <rect x="2" y="3" width="20" height="14" rx="2" />
               <line x1="8" y1="21" x2="16" y2="21" />
               <line x1="12" y1="17" x2="12" y2="21" />
             </svg>
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" stroke="none" />
+            </svg>
           )}
-          {m === 'microphone' ? 'Microphone' : 'Screen Audio'}
+          {m === 'microphone' ? 'Microphone' : m === 'screen' ? 'Screen Audio' : 'Video URL'}
         </button>
       ))}
     </div>
